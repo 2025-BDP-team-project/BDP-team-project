@@ -15,6 +15,7 @@ add_executable(absc_offline
     src/frame_router.cpp
     src/dsp_ops.cpp
     src/metrics.cpp
+    src/absc_controller.cpp
 )
 
 target_include_directories(absc_offline PRIVATE ${SNDFILE_INCLUDE_DIRS})
