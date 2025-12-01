@@ -1,3 +1,17 @@
+## 🚀 변경 사항
+
+본 코드는 오프라인 시연 환경에서 **'안정성과 레이턴시 이득'**을 가장 명확하게 보여주기 위해 튜닝된 버전입니다. 핵심은 **'하드웨어 변수 통제'**와 **'128 블록 생존'**입니다.
+
+| 모듈 | 변경 항목 | 최종 로직 (New Logic) | 변경 이유 (Rationale) |
+| :--- | :--- | :--- | :--- |
+| **`dsp_ops.cpp`** | **부하 생성 방식** | Time-Targeted Busy Wait + 파일 길이 정규화 | **그래프 일관성 확보:** PC 사양과 무관하게 `cb_ms` 변화 패턴을 동일하게 유지합니다. |
+| **`absc_controller.cpp`** | **임계값 (Threshold)** | **Upper 0.30 / Lower 0.15**로 튜닝 | **128 Block 생존:** 초저지연 모드(128)에서 급격한 부하가 와도 크래시 없이 선제적으로 방어합니다. |
+| **`main.cpp`** | **Underrun 처리** | **강제 묵음(Audio Dropout)** 처리 | **청각적 증명:** Fixed 모드가 실패했을 때 소리가 끊기는 청각적 증거를 확보합니다. |
+| **`experiments.py`** | **출력 형식** | 3개의 독립된 PNG 파일 (Time/Block/Reliability) |
+| **`experiments-analysis.py`** | **추가** | 참고용 추가 그래프 |
+
+
+
 # ABSC Offline Harness – README
 
 Adaptive Block Size Control (ABSC)를 구현하기 위한 **오프라인 실험 환경**입니다.  
