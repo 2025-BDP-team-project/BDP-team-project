@@ -1,4 +1,4 @@
-#include "metrics.hpp"
+﻿#include "metrics.hpp"
 #include <iomanip>
 
 Metrics::Metrics(int sampleRate, int hostFrames)
