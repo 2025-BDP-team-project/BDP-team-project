@@ -1,16 +1,47 @@
 ## 🚀 변경 사항
+## 1. src/dsp_ops.hpp 및 src/dsp_ops.cpp (부하 생성기)
+   
+목적: PC 성능과 무관하게 일관된 부하 패턴을 생성하도록 코드를 시뮬레이션 전용 엔진으로 교체했습니다.
 
-본 코드는 오프라인 시연 환경에서 **'안정성과 레이턴시 이득'**을 가장 명확하게 보여주기 위해 튜닝된 버전입니다. 핵심은 **'하드웨어 변수 통제'**와 **'128 블록 생존'**입니다.
+dsp_ops.hpp (추가),totalFrames_ 변수와 setTotalFrames 함수를 추가하여 DSP가 전체 파일 길이를 알 수 있게 함.
 
-| 모듈 | 변경 항목 | 최종 로직 (New Logic) | 변경 이유 (Rationale) |
-| :--- | :--- | :--- | :--- |
-| **`dsp_ops.cpp`** | **부하 생성 방식** | Time-Targeted Busy Wait + 파일 길이 정규화 | **그래프 일관성 확보:** PC 사양과 무관하게 `cb_ms` 변화 패턴을 동일하게 유지합니다. |
-| **`absc_controller.cpp`** | **임계값 (Threshold)** | **Upper 0.30 / Lower 0.15**로 튜닝 | **128 Block 생존:** 초저지연 모드(128)에서 급격한 부하가 와도 크래시 없이 선제적으로 방어합니다. |
-| **`main.cpp`** | **Underrun 처리** | **강제 묵음(Audio Dropout)** 처리 | **청각적 증명:** Fixed 모드가 실패했을 때 소리가 끊기는 청각적 증거를 확보합니다. |
-| **`experiments.py`** | **출력 형식** | 3개의 독립된 PNG 파일 (Time/Block/Reliability) |
-| **`experiments-analysis.py`** | **추가** | 참고용 추가 그래프 |
+dsp_ops.cpp (주요 변경),수학 연산 루프를 제거하고 std::chrono 기반의 시간 목표 Busy Wait 로직으로 교체.
 
+dsp_ops.cpp (튜닝),"부하 패턴을 파일 진행률에 맞춰 정확히 4회 출렁이도록 정규화하고, 피크 부하를 8.5ms로 고정하여 Fixed 모드의 실패를 유도."
 
+---
+
+## 2. src/absc_controller.hpp 및 src/absc_controller.cpp (제어 로직)
+   
+목적: 초저지연(128) 모드를 안전하게 사용하고, 위기 시 확실한 방어(512)를 보장하는 하이브리드 로직을 적용했습니다.
+
+absc_controller.hpp,"upperThreshold_를 0.30으로, lowerThreshold_를 0.15로 튜닝하여 128 Block Size에 대한 감도를 극도로 높임."
+
+absc_controller.cpp (Up Logic),위험 감지 시 256을 거치지 않고 **128에서 512로 즉시 점프(Jump)**하도록 로직 수정. (최대 안전 확보)
+
+absc_controller.cpp (Down Logic),복귀 시에는 512 → 256 → 128의 계단식(Step-wise) 복귀를 통해 시스템의 안정성과 유연성을 확보함.
+
+---
+
+## 3. src/main.cpp (메인 시뮬레이션 환경)
+   
+목적: 시뮬레이션 환경을 설정하고, 청각적인 증명을 위한 기능을 추가했습니다.
+
+DSP 초기화,dsp.setTotalFrames(src.frames());를 호출하여 DSP 엔진에 파일 길이를 전달.
+
+결과 파일명,입력 파일명을 기반으로 [input_name]_fixed.wav와 같이 자동으로 파일명을 생성하도록 변경.
+
+Auditory Proof (추가),if (underrun) 조건문 아래에 std::fill(outBuf...) 묵음 처리 로직을 추가하여 Fixed Mode 실패 시 뚝뚝 끊기는 소리를 재생하도록 함.
+
+---
+
+## 4. scripts/experiments.py (시각화)
+   
+목적: 발표 가독성을 극대화하기 위해 그래프 형태를 분리하고 단순화했습니다.
+
+그래프 분리,"하나의 이미지에 2~4개 그래프를 합치지 않고, 3개의 독립된 PNG 파일(ProcessingTime, BlockSize, Reliability)로 생성."
+
+스타일/언어,Seaborn 스타일과 영문 표준 용어를 사용한 깔끔한 레이블링을 적용하여 전문적인 느낌을 주도록 통일함.
 
 # ABSC Offline Harness – README
 
