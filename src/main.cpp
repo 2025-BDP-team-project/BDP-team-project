@@ -13,18 +13,21 @@
 #include "metrics.hpp"
 #include "absc_controller.hpp"
 
-// 언더런 감지를 위한 데드라인 설정 (48kHz, 256버퍼 기준 5.333ms)
-static constexpr double DEADLINE_MS = 5.333;
-static constexpr double UNDERRUN_THRESHOLD_MS = 0.95 * DEADLINE_MS; 
+// 데드라인은 main에서 계산된 값을 사용하기 위해 전역 변수 제거
 
 bool run_experiment(const std::string& inPath, const std::string& outPath, const std::string& metricsPath, 
                     int hostFrames, int initialInternalBlock, float overlap, bool enableAbsc) {
     
-    std::cout << "\n--- 실험 시작: " << (enableAbsc ? "Adaptive (ABSC)" : "Fixed (Baseline)") << " 모드 ---\n";
+    // 호스트 프레임 기반 데드라인 계산
+    double localDeadline = (double)hostFrames / 48000.0 * 1000.0;
+    double localThreshold = localDeadline * 0.95;
+
+    std::cout << "\n--- Running Experiment: " << (enableAbsc ? "Adaptive (ABSC)" : "Fixed (Baseline)") 
+              << " | Host: " << hostFrames << " | Block: " << initialInternalBlock << " ---\n";
 
     FileSource src;
     if (!src.open(inPath)) return false;
-    if (!src.open(inPath)) return false; // 안정적인 파일 열기를 위한 재시도
+    if (!src.open(inPath)) return false;
 
     FileSink sink;
     if (!sink.open(outPath, src.sampleRate(), src.channels())) return false;
@@ -33,7 +36,6 @@ bool run_experiment(const std::string& inPath, const std::string& outPath, const
     router.setInternalBlockSize(initialInternalBlock);
     router.setOverlap(overlap);
 
-    // DSP 초기화: 정규화된 부하 생성을 위해 전체 프레임 수 전달
     DspOps dsp(src.channels());
     dsp.setTotalFrames(src.frames());
 
@@ -42,24 +44,30 @@ bool run_experiment(const std::string& inPath, const std::string& outPath, const
 
     AbscController controller(src.sampleRate());
     if (enableAbsc) {
-        // [설정] 128 블록부터 시작하여 Low Latency 성능 확보 도전
-        controller.setBlockSizeOptions(128, initialInternalBlock, 512);
-        router.setInternalBlockSize(controller.currentBlockSize());
+        // [핵심 수정] 
+        // 사용자가 입력한 initialInternalBlock과 상관없이
+        // Adaptive 모드는 무조건 [128 - 256 - 512] 구조를 가져야 합니다.
+        // 시작값(current)만 입력값에 맞춰줍니다.
+        controller.setBlockSizeOptions(128, 256, 512);
+        
+        // 시작 블록 크기 설정 (입력값에 맞춤, 단 범위 내에서)
+        int startBlock = initialInternalBlock;
+        if (startBlock < 128) startBlock = 128;
+        if (startBlock > 512) startBlock = 512;
+        router.setInternalBlockSize(startBlock);
     }
 
     std::vector<float> inBuf(hostFrames * src.channels());
     std::vector<float> outBuf(hostFrames * src.channels());
     size_t processed = 0;
-    size_t totalFrames = src.frames();
     
-    while (processed < totalFrames) {
+    while (processed < src.frames()) {
         size_t need = hostFrames;
         size_t got = src.readFrames(inBuf.data(), need);
         if (got < need) std::fill(inBuf.begin() + got*src.channels(), inBuf.end(), 0.0f);
 
         auto t0 = std::chrono::high_resolution_clock::now();
         
-        // 파이프라인 처리
         router.pushInput(inBuf.data(), hostFrames);
         router.processPendingBlocks(dsp);
         router.pullOutput(outBuf.data(), hostFrames);
@@ -67,10 +75,9 @@ bool run_experiment(const std::string& inPath, const std::string& outPath, const
         auto t1 = std::chrono::high_resolution_clock::now();
         double cb_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         
-        bool underrun = cb_ms > UNDERRUN_THRESHOLD_MS; 
+        // Underrun 판정
+        bool underrun = cb_ms > localThreshold; 
 
-        // [중요] 언더런 발생 시 강제 묵음 처리 (Dropout Simulation)
-        // 실제 리얼타임 환경처럼 소리가 끊기는 현상을 재현하기 위함
         if (underrun) {
             std::fill(outBuf.begin(), outBuf.end(), 0.0f);
         }
@@ -90,12 +97,17 @@ bool run_experiment(const std::string& inPath, const std::string& outPath, const
 
 int main(int argc, char** argv) {
     if (argc < 2) { 
-        std::cout << "사용법: ./absc_offline <input.wav>\n"; 
+        std::cout << "Usage: ./absc_offline <input.wav> [HostFrames] [InternalBlock] [Overlap]\n";
         return 1; 
     }
     std::string inPath = argv[1];
     
-    // 입력 파일명을 기반으로 결과 파일명 자동 생성
+    // 기본값
+    int hostFrames = (argc >= 3) ? std::atoi(argv[2]) : 256;
+    int internalBlock = (argc >= 4) ? std::atoi(argv[3]) : 256;
+    float overlap = (argc >= 5) ? std::atof(argv[4]) : 0.5f;
+
+    // 파일명 자동 생성
     std::string baseName = "result";
     size_t lastSlash = inPath.find_last_of("/\\");
     size_t lastDot = inPath.find_last_of(".");
@@ -104,12 +116,20 @@ int main(int argc, char** argv) {
         baseName = inPath.substr(start, lastDot - start);
     }
     
-    std::string outFixed = baseName + "_fixed.wav";
-    std::string outAdaptive = baseName + "_adaptive.wav";
+    // 결과 파일명에 설정값 포함 (덮어쓰기 방지)
+    std::string suffix = "_" + std::to_string(internalBlock);
+    std::string outFixed = baseName + suffix + "_fixed.wav";
+    std::string outAdaptive = baseName + suffix + "_adaptive.wav";
+    
+    // CSV 파일명도 구분
+    std::string csvFixed = "metrics_fixed_high_load.csv"; // 분석 스크립트 호환용
+    std::string csvAdaptive = "metrics_adaptive.csv";     // 분석 스크립트 호환용
 
-    // 두 가지 모드 실험 실행
-    run_experiment(inPath, outFixed, "metrics_fixed_high_load.csv", 256, 256, 0.5f, false);
-    run_experiment(inPath, outAdaptive, "metrics_adaptive.csv", 256, 256, 0.5f, true);
+    // 1. Fixed Mode (입력값 사용)
+    run_experiment(inPath, outFixed, csvFixed, hostFrames, internalBlock, overlap, false);
+    
+    // 2. Adaptive Mode (구조는 128-256-512 고정, 시작값만 입력값 사용)
+    run_experiment(inPath, outAdaptive, csvAdaptive, hostFrames, internalBlock, overlap, true);
     
     return 0;
 }
