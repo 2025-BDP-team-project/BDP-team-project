@@ -6,6 +6,7 @@ public:
     AbscController(int sampleRate, int historySize = 50);
 
     void setBlockSizeOptions(int small, int normal, int large);
+    void forceLargeBlock(bool enabled);
     int onCallbackEnd(double cb_ms);
     int currentBlockSize() const { return currentBlockSize_; }
     
@@ -17,6 +18,8 @@ private:
     int smallBlock_ = 128;
     int normalBlock_ = 256;
     int largeBlock_ = 512;
+
+    bool forceLargeBlock_ = false;
 
     int currentBlockSize_;         
     long long framesSinceSwitch_ = 0; 

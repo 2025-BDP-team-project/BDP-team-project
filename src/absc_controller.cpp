@@ -21,7 +21,15 @@ void AbscController::setBlockSizeOptions(int small, int normal, int large) {
     smallBlock_ = small;
     normalBlock_ = normal;
     largeBlock_ = large;
-    currentBlockSize_ = normalBlock_; 
+    currentBlockSize_ = normalBlock_;
+}
+
+void AbscController::forceLargeBlock(bool enabled) {
+    forceLargeBlock_ = enabled;
+    if (forceLargeBlock_) {
+        currentBlockSize_ = largeBlock_;
+        framesSinceSwitch_ = 0;
+    }
 }
 
 void AbscController::updateMean(double new_cb_ms) {
@@ -67,6 +75,12 @@ void AbscController::updateBlockSize(double target_ms) {
 
 int AbscController::onCallbackEnd(double cb_ms) {
     updateMean(cb_ms);
+
+    if (forceLargeBlock_) {
+        currentBlockSize_ = largeBlock_;
+        framesSinceSwitch_ += currentBlockSize_;
+        return currentBlockSize_;
+    }
 
     // 쿨다운 기간이 지났을 때만 블록 크기 변경 시도
     if (framesSinceSwitch_ >= cooldownFrames_) {

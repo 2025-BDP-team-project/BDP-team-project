@@ -15,14 +15,17 @@
 
 // 데드라인은 main에서 계산된 값을 사용하기 위해 전역 변수 제거
 
-bool run_experiment(const std::string& inPath, const std::string& outPath, const std::string& metricsPath, 
-                    int hostFrames, int initialInternalBlock, float overlap, bool enableAbsc) {
+bool run_experiment(const std::string& inPath, const std::string& outPath, const std::string& metricsPath,
+                    int hostFrames, int initialInternalBlock, float overlap, bool enableAbsc, bool forceAbscLarge) {
     
     // 호스트 프레임 기반 데드라인 계산
     double localDeadline = (double)hostFrames / 48000.0 * 1000.0;
     double localThreshold = localDeadline * 0.95;
 
-    std::cout << "\n--- Running Experiment: " << (enableAbsc ? "Adaptive (ABSC)" : "Fixed (Baseline)") 
+    std::cout << "\n--- Running Experiment: "
+              << (enableAbsc
+                  ? (forceAbscLarge ? "Adaptive (ABSC Locked to 512)" : "Adaptive (ABSC)")
+                  : "Fixed (Baseline)")
               << " | Host: " << hostFrames << " | Block: " << initialInternalBlock << " ---\n";
 
     FileSource src;
@@ -44,17 +47,19 @@ bool run_experiment(const std::string& inPath, const std::string& outPath, const
 
     AbscController controller(src.sampleRate());
     if (enableAbsc) {
-        // [핵심 수정] 
+        // [핵심 수정]
         // 사용자가 입력한 initialInternalBlock과 상관없이
         // Adaptive 모드는 무조건 [128 - 256 - 512] 구조를 가져야 합니다.
         // 시작값(current)만 입력값에 맞춰줍니다.
         controller.setBlockSizeOptions(128, 256, 512);
-        
+
         // 시작 블록 크기 설정 (입력값에 맞춤, 단 범위 내에서)
         int startBlock = initialInternalBlock;
         if (startBlock < 128) startBlock = 128;
         if (startBlock > 512) startBlock = 512;
+        if (forceAbscLarge) startBlock = 512;
         router.setInternalBlockSize(startBlock);
+        controller.forceLargeBlock(forceAbscLarge);
     }
 
     std::vector<float> inBuf(hostFrames * src.channels());
@@ -120,16 +125,21 @@ int main(int argc, char** argv) {
     std::string suffix = "_" + std::to_string(internalBlock);
     std::string outFixed = baseName + suffix + "_fixed.wav";
     std::string outAdaptive = baseName + suffix + "_adaptive.wav";
+    std::string outAdaptiveLocked = baseName + suffix + "_adaptive_locked.wav";
     
     // CSV 파일명도 구분
-    std::string csvFixed = "metrics_fixed_high_load.csv"; // 분석 스크립트 호환용
-    std::string csvAdaptive = "metrics_adaptive.csv";     // 분석 스크립트 호환용
+    std::string csvFixed = "metrics_fixed_high_load.csv";       // 분석 스크립트 호환용
+    std::string csvAdaptive = "metrics_adaptive.csv";           // 분석 스크립트 호환용
+    std::string csvAdaptiveLocked = "metrics_adaptive_512.csv"; // ABSC를 512 고정으로 사용하는 케이스
 
     // 1. Fixed Mode (입력값 사용)
-    run_experiment(inPath, outFixed, csvFixed, hostFrames, internalBlock, overlap, false);
-    
+    run_experiment(inPath, outFixed, csvFixed, hostFrames, internalBlock, overlap, false, false);
+
     // 2. Adaptive Mode (구조는 128-256-512 고정, 시작값만 입력값 사용)
-    run_experiment(inPath, outAdaptive, csvAdaptive, hostFrames, internalBlock, overlap, true);
+    run_experiment(inPath, outAdaptive, csvAdaptive, hostFrames, internalBlock, overlap, true, false);
+
+    // 3. Adaptive Mode이지만, 제어 로직을 끄고 largeBlock(512)으로 고정한 케이스
+    run_experiment(inPath, outAdaptiveLocked, csvAdaptiveLocked, hostFrames, internalBlock, overlap, true, true);
     
     return 0;
 }
