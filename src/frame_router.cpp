@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cstring>
 FrameRouter::FrameRouter(int sampleRate, int channels) : sr_(sampleRate), ch_(channels) {
-    blockIn_.resize(internalBlock_ * ch_); blockOut_.resize(internalBlock_ * ch_);
+    blockIn_.resize(internalBlock_ * ch_);
+    blockOut_.resize(internalBlock_ * ch_);
+    initRingBuffers();
 }
 void FrameRouter::setInternalBlockSize(int n) {
     if (n <= 0) return; internalBlock_ = n;
@@ -12,18 +14,28 @@ void FrameRouter::setInternalBlockSize(int n) {
 }
 void FrameRouter::setOverlap(float ov) { overlap_ = std::max(0.0f, std::min(0.95f, ov)); }
 void FrameRouter::pushInput(const float* interleaved, size_t frames) {
-    size_t old = inRing_.size(); inRing_.resize(old + frames * ch_);
-    std::memcpy(inRing_.data() + old, interleaved, frames * ch_ * sizeof(float));
-    inSize_ += frames;
+    size_t totalSamples = frames * ch_;
+    size_t written = inRing_.push(interleaved, totalSamples);
+    if (written < totalSamples) {
+        // Ring capacity is intentionally oversized to avoid overflow in offline use.
+        // If it still happens, fall back to synchronous handling of the remaining samples.
+        const float* remain = interleaved + written;
+        size_t remaining = totalSamples - written;
+        while (remaining > 0) {
+            size_t advance = inRing_.push(remain, remaining);
+            if (advance == 0) break;
+            remain += advance;
+            remaining -= advance;
+        }
+    }
 }
 void FrameRouter::processPendingBlocks(DspOps& dsp) {
-    while (inSize_ >= (size_t)internalBlock_) {
-        std::memcpy(blockIn_.data(), inRing_.data(), internalBlock_ * ch_ * sizeof(float));
-        size_t consume = internalBlock_ * ch_;
-        if (inRing_.size() > consume) {
-            std::memmove(inRing_.data(), inRing_.data() + consume, (inRing_.size() - consume) * sizeof(float));
+    const size_t blockSamples = static_cast<size_t>(internalBlock_) * ch_;
+    while (availableInFrames() >= static_cast<size_t>(internalBlock_)) {
+        size_t popped = inRing_.pop(blockIn_.data(), blockSamples);
+        if (popped < blockSamples) {
+            break;
         }
-        inRing_.resize(inRing_.size() - consume); inSize_ -= internalBlock_;
         dsp.processBlock(blockIn_.data(), blockOut_.data(), internalBlock_);
         writeToOutRing(blockOut_.data(), internalBlock_);
     }
@@ -41,18 +53,32 @@ void FrameRouter::pullOutput(float* interleaved, size_t frames) {
     }
 }
 void FrameRouter::writeToOutRing(const float* src, size_t frames) {
-    size_t old = outRing_.size(); outRing_.resize(old + frames * ch_);
-    std::memcpy(outRing_.data() + old, src, frames * ch_ * sizeof(float)); outSize_ += frames;
+    size_t samples = frames * ch_;
+    size_t written = outRing_.push(src, samples);
+    if (written < samples) {
+        const float* remain = src + written;
+        size_t remaining = samples - written;
+        while (remaining > 0) {
+            size_t advance = outRing_.push(remain, remaining);
+            if (advance == 0) break;
+            remain += advance;
+            remaining -= advance;
+        }
+    }
 }
 size_t FrameRouter::readFromOutRing(float* dst, size_t frames) {
-    size_t avail = std::min(outSize_, frames);
-    if (avail > 0) {
-        std::memcpy(dst, outRing_.data(), avail * ch_ * sizeof(float));
-        size_t consume = avail * ch_;
-        if (outRing_.size() > consume) {
-            std::memmove(outRing_.data(), outRing_.data() + consume, (outRing_.size() - consume) * sizeof(float));
-        }
-        outRing_.resize(outRing_.size() - consume); outSize_ -= avail;
-    }
-    return avail;
+    size_t requestedSamples = frames * ch_;
+    size_t popped = outRing_.pop(dst, requestedSamples);
+    return popped / ch_;
+}
+
+size_t FrameRouter::availableInFrames() const {
+    return inRing_.size() / static_cast<size_t>(ch_);
+}
+
+void FrameRouter::initRingBuffers() {
+    const size_t safetyFrames = std::max(4096, sr_); // at least ~1s of audio or 4096 frames
+    const size_t ringCapacitySamples = static_cast<size_t>(safetyFrames) * ch_ * 4; // generous headroom for overlap
+    inRing_.reset(ringCapacitySamples);
+    outRing_.reset(ringCapacitySamples);
 }
