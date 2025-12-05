@@ -3,7 +3,7 @@
 #include <cmath>
 #include <chrono>
 #include <thread>
-#include <algorithm> 
+#include <algorithm>
 
 DspOps::DspOps(int channels) : ch_(channels), z_(channels, 0.0f) {}
 
@@ -24,29 +24,55 @@ void DspOps::processBlock(const float* inInterleaved, float* outInterleaved, int
     // 평소(0.5ms): 128 블록(한계 2.6ms)도 여유롭게 처리 가능 -> Low Latency 달성
     // 피크(9.0ms): 256 블록(한계 5.3ms)은 감당 불가 -> Fixed 모드 붕괴
     //             512 블록(한계 10.6ms)은 생존 가능 -> Adaptive 모드 생존
-    double targetDelayMs = 0.5 + (loadFactor * 8.5); 
+    double targetDelayMs = 0.5 + (loadFactor * 8.5);
 
-    // 4. 부하 시뮬레이션 (Busy Wait)
-    // 컴퓨터 사양과 무관하게 항상 일정한 CPU 부하를 발생시킵니다.
-    auto start = std::chrono::high_resolution_clock::now();
-    while (true) {
-        volatile float dummy = 0.0f;
-        for(int i=0; i<100; ++i) dummy += 1.0f; // 컴파일러 최적화 방지
-        
-        auto now = std::chrono::high_resolution_clock::now();
-        // 목표 시간이 될 때까지 루프를 돌며 CPU를 점유합니다.
-        if (std::chrono::duration<double, std::milli>(now - start).count() >= targetDelayMs) {
-            break; 
+    if (simulateLoad_) {
+        // 4. 부하 시뮬레이션 (Busy Wait)
+        // 컴퓨터 사양과 무관하게 항상 일정한 CPU 부하를 발생시킵니다.
+        auto start = std::chrono::high_resolution_clock::now();
+        while (true) {
+            volatile float dummy = 0.0f;
+            for(int i=0; i<100; ++i) dummy += 1.0f; // 컴파일러 최적화 방지
+
+            auto now = std::chrono::high_resolution_clock::now();
+            // 목표 시간이 될 때까지 루프를 돌며 CPU를 점유합니다.
+            if (std::chrono::duration<double, std::milli>(now - start).count() >= targetDelayMs) {
+                break;
+            }
         }
     }
 
-    // 5. 실제 DSP 신호 처리 (1-pole Low-pass Filter)
-    for (int n = 0; n < frames; ++n) {
-        for (int c = 0; c < ch_; ++c) {
-            float x = inInterleaved[n * ch_ + c];
-            z_[c] = z_[c] + alpha_ * (x - z_[c]);
-            outInterleaved[n * ch_ + c] = z_[c];
+    auto processRange = [&](int chBegin, int chEnd) {
+        for (int n = 0; n < frames; ++n) {
+            for (int c = chBegin; c < chEnd; ++c) {
+                float x = inInterleaved[n * ch_ + c];
+                z_[c] = z_[c] + alpha_ * (x - z_[c]);
+                outInterleaved[n * ch_ + c] = z_[c];
+            }
         }
+    };
+
+    if (workerThreads_ <= 1 || ch_ == 1) {
+        processRange(0, ch_);
+    } else {
+        int threads = std::min(workerThreads_, ch_);
+        int base = ch_ / threads;
+        int extra = ch_ % threads;
+        std::vector<std::thread> pool;
+        int startCh = 0;
+        for (int t = 0; t < threads; ++t) {
+            int count = base + (t < extra ? 1 : 0);
+            int endCh = startCh + count;
+            if (count <= 0) break;
+
+            if (t + 1 == threads) {
+                processRange(startCh, endCh);
+            } else {
+                pool.emplace_back(processRange, startCh, endCh);
+            }
+            startCh = endCh;
+        }
+        for (auto& th : pool) th.join();
     }
 
     processedFrames_ += frames;

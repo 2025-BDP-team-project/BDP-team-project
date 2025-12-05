@@ -16,7 +16,8 @@
 // 데드라인은 main에서 계산된 값을 사용하기 위해 전역 변수 제거
 
 bool run_experiment(const std::string& inPath, const std::string& outPath, const std::string& metricsPath,
-                    int hostFrames, int initialInternalBlock, float overlap, bool enableAbsc, bool forceAbscLarge) {
+                    int hostFrames, int initialInternalBlock, float overlap, bool enableAbsc, bool forceAbscLarge,
+                    int workerThreads, bool simulateLoad) {
     
     // 호스트 프레임 기반 데드라인 계산
     double localDeadline = (double)hostFrames / 48000.0 * 1000.0;
@@ -30,7 +31,6 @@ bool run_experiment(const std::string& inPath, const std::string& outPath, const
 
     FileSource src;
     if (!src.open(inPath)) return false;
-    if (!src.open(inPath)) return false;
 
     FileSink sink;
     if (!sink.open(outPath, src.sampleRate(), src.channels())) return false;
@@ -41,6 +41,8 @@ bool run_experiment(const std::string& inPath, const std::string& outPath, const
 
     DspOps dsp(src.channels());
     dsp.setTotalFrames(src.frames());
+    dsp.setWorkerThreads(workerThreads);
+    dsp.setSimulateLoad(simulateLoad);
 
     Metrics metrics(src.sampleRate(), hostFrames);
     metrics.openCSV(metricsPath);
@@ -101,9 +103,11 @@ bool run_experiment(const std::string& inPath, const std::string& outPath, const
 }
 
 int main(int argc, char** argv) {
-    if (argc < 2) { 
-        std::cout << "Usage: ./absc_offline <input.wav> [HostFrames] [InternalBlock] [Overlap]\n";
-        return 1; 
+    if (argc < 2) {
+        std::cout << "Usage: ./absc_offline <input.wav> [HostFrames] [InternalBlock] [Overlap] [Threads] [SimulateLoad]\n";
+        std::cout << " - Threads: DSP 채널 처리를 병렬화할 스레드 수 (기본 1)\n";
+        std::cout << " - SimulateLoad: 1이면 기존 Busy-wait 부하 유지, 0이면 순수 DSP만 실행\n";
+        return 1;
     }
     std::string inPath = argv[1];
     
@@ -111,6 +115,8 @@ int main(int argc, char** argv) {
     int hostFrames = (argc >= 3) ? std::atoi(argv[2]) : 256;
     int internalBlock = (argc >= 4) ? std::atoi(argv[3]) : 256;
     float overlap = (argc >= 5) ? std::atof(argv[4]) : 0.5f;
+    int workerThreads = (argc >= 6) ? std::atoi(argv[5]) : 1;
+    bool simulateLoad = (argc >= 7) ? (std::atoi(argv[6]) != 0) : true;
 
     // 파일명 자동 생성
     std::string baseName = "result";
@@ -133,13 +139,13 @@ int main(int argc, char** argv) {
     std::string csvAdaptiveLocked = "metrics_adaptive_512.csv"; // ABSC를 512 고정으로 사용하는 케이스
 
     // 1. Fixed Mode (입력값 사용)
-    run_experiment(inPath, outFixed, csvFixed, hostFrames, internalBlock, overlap, false, false);
+    run_experiment(inPath, outFixed, csvFixed, hostFrames, internalBlock, overlap, false, false, workerThreads, simulateLoad);
 
     // 2. Adaptive Mode (구조는 128-256-512 고정, 시작값만 입력값 사용)
-    run_experiment(inPath, outAdaptive, csvAdaptive, hostFrames, internalBlock, overlap, true, false);
+    run_experiment(inPath, outAdaptive, csvAdaptive, hostFrames, internalBlock, overlap, true, false, workerThreads, simulateLoad);
 
     // 3. Adaptive Mode이지만, 제어 로직을 끄고 largeBlock(512)으로 고정한 케이스
-    run_experiment(inPath, outAdaptiveLocked, csvAdaptiveLocked, hostFrames, internalBlock, overlap, true, true);
+    run_experiment(inPath, outAdaptiveLocked, csvAdaptiveLocked, hostFrames, internalBlock, overlap, true, true, workerThreads, simulateLoad);
     
     return 0;
 }
