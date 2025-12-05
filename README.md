@@ -153,6 +153,15 @@ cd build
 	•	internalBlock: 내부 처리 블록 크기 (나중에 ABSC가 동적으로 제어)
 	•	결과물: metrics.csv, out_fixed.wav
 
+
+추가 옵션(병렬화 실험):
+```
+./absc_offline ../assets/input_48k.wav ../assets/out_fixed.wav 256 256 0.5 [threads] [simulateLoad]
+```
+• threads: DSP 채널 처리를 병렬화할 스레드 수(예: 1/2/4)
+• simulateLoad: 1이면 기존 busy-wait 부하 유지, 0이면 부하를 꺼서 순수 DSP 처리만 측정
+→ 예시: 싱글/듀얼/쿼드 코어 비교 = simulateLoad를 0으로 두고 threads를 1/2/4로 바꿔가며 실행
+
 3.	그래프 생성
 
 ```
